@@ -1,0 +1,110 @@
+## Demo, version 2 - Vault Agent Injector.
+##
+## Everything that talks to Vault is in the annotations below. The application
+## container has no Vault address, no token and no Vault code - compare the env
+## block here with the one in deployment.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app-agent
+  namespace: demo-apps
+  labels:
+    app: demo-app-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-app-agent
+  template:
+    metadata:
+      labels:
+        app: demo-app-agent
+      annotations:
+        # --- tell the injector to add the sidecar -------------------------------
+        vault.hashicorp.com/agent-inject: "true"
+        # Vault Enterprise namespace the secrets live in
+        vault.hashicorp.com/namespace: "apps"
+        # the existing Kubernetes auth mount, and the role bound to sa/demo-app
+        vault.hashicorp.com/auth-path: "auth/kubernetes"
+        vault.hashicorp.com/role: "demo-app"
+        # The Phase 1 credential has no lease, so the agent would otherwise re-read it only
+        # every 5 minutes. 20s against a 1m rotation period keeps the file within ~20s of
+        # the truth. NOTE the prefix: this one is "template-", NOT "template-config-".
+        # Only exit-on-retry-failure uses "template-config-". A wrong prefix is accepted
+        # onto the pod and then silently ignored, which is a genuinely annoying trap.
+        vault.hashicorp.com/template-static-secret-render-interval: "20s"
+
+        # --- Phase 1: the rotating static key ----------------------------------
+        vault.hashicorp.com/agent-inject-secret-aws-static.json: "aws-demo/static-creds/demo-app"
+        vault.hashicorp.com/agent-inject-template-aws-static.json: |
+          {{- with secret "aws-demo/static-creds/demo-app" -}}
+          {"access_key":"{{ .Data.access_key }}","secret_key":"{{ .Data.secret_key }}","expiration":"{{ .Data.expiration }}"}
+          {{- end }}
+
+        # --- Phase 2: the just-in-time credential ------------------------------
+        vault.hashicorp.com/agent-inject-secret-aws-dynamic.json: "aws-demo/creds/dynamic-sts"
+        vault.hashicorp.com/agent-inject-template-aws-dynamic.json: |
+          {{- with secret "aws-demo/creds/dynamic-sts" -}}
+          {"access_key":"{{ .Data.access_key }}","secret_key":"{{ .Data.secret_key }}","session_token":"{{ .Data.session_token }}","arn":"{{ .Data.arn }}","ttl":"{{ .Data.ttl }}"}
+          {{- end }}
+    spec:
+      # the SAME ServiceAccount as version 1, so the SAME Vault role and policy apply.
+      # Only the way the credential reaches the app has changed.
+      serviceAccountName: demo-app
+      containers:
+        - name: app
+          image: python:3.12-slim
+          command: ["python", "-u", "/app/app.py"]
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            # Two file paths and a region. No Vault address, no token, no role.
+            - name: STATIC_CRED_FILE
+              value: "/vault/secrets/aws-static.json"
+            - name: DYNAMIC_CRED_FILE
+              value: "/vault/secrets/aws-dynamic.json"
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: code
+              mountPath: /app
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: code
+          configMap:
+            name: demo-app-agent-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app-agent
+  namespace: demo-apps
+spec:
+  selector:
+    app: demo-app-agent
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http

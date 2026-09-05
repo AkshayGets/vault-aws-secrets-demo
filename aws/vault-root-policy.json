@@ -1,0 +1,13 @@
+{"Version":"2012-10-17","Statement":[
+ {"Sid":"RotateStaticRoleTargetAndSelf","Effect":"Allow",
+  "Action":["iam:GetUser","iam:CreateAccessKey","iam:DeleteAccessKey","iam:ListAccessKeys"],
+  "Resource":["arn:aws:iam::111122223333:user/demo-app","arn:aws:iam::111122223333:user/vault-root"]},
+ {"Sid":"Phase2AssumeRole","Effect":"Allow","Action":"sts:AssumeRole",
+  "Resource":"arn:aws:iam::111122223333:role/dynamic-role"},
+ {"Sid":"Phase2DynamicIamUsersScopedToVaultPath","Effect":"Allow",
+  "Action":["iam:CreateUser","iam:DeleteUser","iam:GetUser","iam:TagUser",
+            "iam:AttachUserPolicy","iam:DetachUserPolicy","iam:ListAttachedUserPolicies",
+            "iam:PutUserPolicy","iam:DeleteUserPolicy","iam:ListUserPolicies",
+            "iam:CreateAccessKey","iam:DeleteAccessKey","iam:ListAccessKeys","iam:ListGroupsForUser"],
+  "Resource":"arn:aws:iam::111122223333:user/vault-dynamic/*"}
+]}

@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VaultPluginWIF",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::111122223333:oidc-provider/vault.example.com/v1/apps/identity/oidc/plugins"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "vault.example.com/v1/apps/identity/oidc/plugins:aud": "vault-aws-demo"
+        }
+      }
+    }
+  ]
+}

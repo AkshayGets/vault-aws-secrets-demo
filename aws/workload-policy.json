@@ -1,0 +1,4 @@
+{"Version":"2012-10-17","Statement":[
+ {"Sid":"ProveIdentity","Effect":"Allow","Action":"sts:GetCallerIdentity","Resource":"*"},
+ {"Sid":"ProveAuthorization","Effect":"Allow","Action":"s3:ListAllMyBuckets","Resource":"*"}
+]}
