@@ -96,7 +96,14 @@ def sigv4(method, url, service, akid, skey, stoken=None, body=b"", extra=None):
         return r.read().decode(), int((time.time() - t0) * 1000)
 
 
-def aws_whoami(creds, label):
+# IAM is eventually consistent: an access key created moments ago is not yet valid
+# everywhere. A freshly rotated credential can therefore be rejected for a few seconds.
+# This is normal AWS behaviour, not a Vault or application fault - retry briefly.
+NOT_READY_YET = ("InvalidClientTokenId", "InvalidAccessKeyId",
+                 "SignatureDoesNotMatch", "AccessDenied")
+
+
+def aws_whoami(creds, label, retries=5):
     """sts:GetCallerIdentity - proves WHICH identity this credential maps to."""
     body = b"Action=GetCallerIdentity&Version=2011-06-15"
     try:
@@ -109,6 +116,11 @@ def aws_whoami(creds, label):
         return {"ok": True, "arn": arn, "ms": ms}
     except urllib.error.HTTPError as e:
         msg = e.read().decode()[:200]
+        if retries > 0 and any(c in msg for c in NOT_READY_YET):
+            log("app → aws", "sts:GetCallerIdentity",
+                f"{label} → key not propagated yet, retrying ({retries} left)", "warn")
+            time.sleep(2)
+            return aws_whoami(creds, label, retries - 1)
         log("app → aws", "sts:GetCallerIdentity", f"{label} → {msg}", "error")
         return {"ok": False, "error": msg}
     except Exception as e:
@@ -116,7 +128,7 @@ def aws_whoami(creds, label):
         return {"ok": False, "error": str(e)}
 
 
-def aws_list_buckets(creds, label):
+def aws_list_buckets(creds, label, retries=5):
     """s3:ListAllMyBuckets - proves the credential is AUTHORIZED, not merely valid."""
     try:
         xml, ms = sigv4("GET", f"https://s3.{AWS_REGION}.amazonaws.com/", "s3",
@@ -127,6 +139,9 @@ def aws_list_buckets(creds, label):
         return {"ok": True, "buckets": names, "ms": ms}
     except urllib.error.HTTPError as e:
         msg = e.read().decode()[:200]
+        if retries > 0 and any(c in msg for c in NOT_READY_YET):
+            time.sleep(2)
+            return aws_list_buckets(creds, label, retries - 1)
         log("app → aws", "s3:ListAllMyBuckets", f"{label} → {msg}", "error")
         return {"ok": False, "error": msg}
     except Exception as e:
@@ -362,7 +377,7 @@ button:hover{background:#3a352e}
       </div>
       <div class="lbl">identity when the app calls AWS</div>
       <div class="arn mono" id="d-arn">-</div>
-      <p class="note">This is an STS session of <code>role/dynamic-role</code>, not an IAM
+      <p class="note">This is an STS session of <code>role/dynamic-sts-role</code>, not an IAM
          user — nothing was created in IAM and nothing needs cleaning up. Note the session
          name: CloudTrail attributes every action back to the Vault role that asked.</p>
       <div style="margin-top:14px"><button onclick="post('/api/refresh')">Re-read files &amp; call AWS</button></div>

@@ -34,6 +34,15 @@ spec:
         # onto the pod and then silently ignored, which is a genuinely annoying trap.
         vault.hashicorp.com/template-static-secret-render-interval: "20s"
 
+        # --- who may read the rendered files ------------------------------------
+        # 0400 = readable only by the file's owner. Without this the agent renders
+        # world-readable (0644) files, which is fine for a lab and wrong anywhere else.
+        vault.hashicorp.com/agent-inject-perms-aws-static.json: "0400"
+        vault.hashicorp.com/agent-inject-perms-aws-dynamic.json: "0400"
+        # Run the agent as the same UID as the application container, so "owner" above
+        # means the application. Requires the app container to set runAsUser explicitly.
+        vault.hashicorp.com/agent-run-as-same-user: "true"
+
         # --- Phase 1: the rotating static key ----------------------------------
         vault.hashicorp.com/agent-inject-secret-aws-static.json: "aws-demo/static-creds/demo-app"
         vault.hashicorp.com/agent-inject-template-aws-static.json: |
@@ -55,6 +64,15 @@ spec:
         - name: app
           image: python:3.12-slim
           command: ["python", "-u", "/app/app.py"]
+          # Run as an ordinary user, not root. This is what gives the 0400 files above
+          # a meaningful owner - root would be able to read them regardless.
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
               name: http

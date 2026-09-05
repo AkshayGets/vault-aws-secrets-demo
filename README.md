@@ -408,7 +408,92 @@ changed; the application simply reads a file whose contents occasionally differ.
 
 ---
 
-## 9. Non-Kubernetes workloads — EC2
+## 9. Where the credential lives
+
+The rendered files are how the credential reaches the application, so it is worth knowing
+exactly what they are, where they exist and who can read them.
+
+### A memory-backed volume
+
+The injector mounts `/vault/secrets` as `emptyDir` with `medium: Memory` — a tmpfs, mounted
+`noswap`:
+
+```
+$ kubectl exec -n demo-apps deploy/demo-app-agent -c app -- mount | grep /vault/secrets
+tmpfs on /vault/secrets type tmpfs (rw,relatime,noswap)
+```
+
+The credential therefore exists in RAM for the lifetime of the pod and nowhere else. It is
+never written to the node's disk, so it cannot appear in a volume snapshot, a disk backup, or
+an image of the node, and it is never paged out to swap. When the pod stops, it is gone.
+
+### Owner-only file permissions
+
+By default the agent renders files world-readable within the container (`0644`). Two
+annotations tighten that, and the manifest in this repository sets both:
+
+```yaml
+vault.hashicorp.com/agent-inject-perms-aws-static.json: "0400"
+vault.hashicorp.com/agent-inject-perms-aws-dynamic.json: "0400"
+vault.hashicorp.com/agent-run-as-same-user: "true"
+```
+
+`agent-inject-perms-<name>` sets the file mode. `agent-run-as-same-user` runs the Vault Agent
+under the same UID as the application container, so that the "owner" who may read a `0400`
+file is the application itself. That second annotation requires the application container to
+declare a UID explicitly, which it does:
+
+```yaml
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+```
+
+Running as an ordinary user is what makes the file mode meaningful — root would be able to
+read the file whatever its permissions say. The result:
+
+```
+$ kubectl exec -n demo-apps deploy/demo-app-agent -c app -- sh -c 'id; ls -l /vault/secrets/'
+uid=1000 gid=1000 groups=1000
+-r--------. 1 1000 1000 1054 aws-dynamic.json
+-r--------. 1 1000 1000  140 aws-static.json
+```
+
+One identity can read the credential: the process that needs it.
+
+### Why a file rather than an environment variable
+
+Environment variables are a common alternative and a weaker one. They are readable through
+`/proc/<pid>/environ`, are inherited by every child process, appear in crash dumps and core
+files, and are frequently captured by logging agents, error trackers and orchestrator tooling
+that prints process metadata. A file has an owner and a mode; an environment variable has
+neither. If an application can only accept an environment variable, the agent's
+`agent-inject-command` annotation can source the file into the process at startup, keeping the
+credential out of the pod spec either way.
+
+### What this adds up to
+
+A credential exists where it is used, for as long as it is needed, readable by the process
+that needs it. It is valid for 60 seconds (Phase 1) or 15 minutes (Phase 2), it was generated
+by machines with no person in the path, and it maps to one identity with a minimal policy that
+CloudTrail attributes back to this workload.
+
+Just as importantly, it is absent from the places credentials are usually found: source
+repositories, CI job logs, container images, chat and email, ticketing systems, configuration
+management and developer machines. It could not be committed by accident, because it did not
+exist until the pod started and will not exist after it stops.
+
+Access to a running container is the remaining path to the file, and that is governed by
+Kubernetes RBAC — `pods/exec` is the permission to audit and restrict, and it is a control you
+already own.
+
+---
+
+## 10. Non-Kubernetes workloads — EC2
 
 Kubernetes auth works because the kubelet gives each pod a signed token proving its
 ServiceAccount. An EC2 instance has neither, so it needs a different way to prove identity —
@@ -474,6 +559,7 @@ template_config { static_secret_render_interval = "20s" }
 
 template {
   destination = "/etc/app/secrets/aws-static.json"
+  perms       = "0400"
   contents    = <<EOT
 {{- with secret "aws-demo/static-creds/demo-app" -}}
 {"access_key":"{{ .Data.access_key }}","secret_key":"{{ .Data.secret_key }}"}
@@ -483,6 +569,7 @@ EOT
 
 template {
   destination = "/etc/app/secrets/aws-dynamic.json"
+  perms       = "0400"
   contents    = <<EOT
 {{- with secret "aws-demo/creds/dynamic-sts" -}}
 {"access_key":"{{ .Data.access_key }}","secret_key":"{{ .Data.secret_key }}","session_token":"{{ .Data.session_token }}"}
@@ -494,6 +581,13 @@ EOT
 Compare that with the annotations in section 6. It is the same agent, the same templates and
 the same files — the `auto_auth` stanza is the only difference, and a platform team writes it
 once into a base image or configuration-management role.
+
+The protections described in section 9 apply here too, with the same effect by different
+mechanics. `perms = "0400"` is the `template` stanza's equivalent of the
+`agent-inject-perms-<name>` annotation, and the agent should run under the service account
+that owns the application so that the file's owner is the process that reads it. On a virtual
+machine the directory is ordinary disk rather than tmpfs, so place it on a `tmpfs` mount if
+you want the same memory-only property.
 
 ### Developer experience on EC2
 
@@ -515,7 +609,7 @@ and the same file on disk.
 
 ---
 
-## 10. Running the demo
+## 11. Running the demo
 
 ```bash
 ./scripts/demo-agent.sh start     # http://localhost:8081
@@ -561,7 +655,7 @@ the difference can be shown.
 
 ---
 
-## 11. Security notes
+## 12. Security notes
 
 - Vault's credential is scoped to named IAM entities and one user path. It is not an
   administrator credential, and the policy document is in the repository for review.
@@ -571,13 +665,14 @@ the difference can be shown.
 - Vault tokens issued to workloads are short-lived (1h here). Renewal is available, but
   re-authenticating is cheap when identity is platform-issued, and re-proving identity is
   preferable to extending trust in an old token.
-- Credentials are rendered to an in-memory volume, not to node disk.
+- Credentials are rendered to an in-memory volume, readable only by the application's own
+  user. See section 9 for how this is configured and what it means.
 - `rotation_period=1m` is a demonstration value. Production deployments should use
   `rotation_schedule` with a cron expression.
 
 ---
 
-## 12. What is in this repository
+## 13. What is in this repository
 
 ```
 app-agent/app.py              the application - contains no Vault code
