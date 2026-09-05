@@ -59,18 +59,20 @@ header, read from `aws-demo/config/root` at runtime rather than from documentati
 
 ### Two credentials, two different jobs
 
-These are routinely confused, and the confusion inverts the whole story.
+Two separate AWS credentials are involved in this design, and they do different things. The
+table below shows what each one is for, where it is kept, who can read it and how long it
+lasts.
 
-| | Vault's own credential | The workload's credential |
+| | **Vault's own credential** (used by Vault to create and replace keys on your behalf) | **The workload's credential** (used by your application to do its work in AWS) |
 |---|---|---|
-| Where it lives | `aws-demo/config/root` | a file inside the pod |
-| What it is for | calling `iam:CreateAccessKey`, `iam:DeleteAccessKey`, `sts:AssumeRole` — **manufacturing** credentials | doing actual work in AWS |
-| Who sees it | nobody | the workload, in memory, at runtime |
-| Lifetime | long-lived but machine-managed | 60 seconds (Phase 1) or 15 minutes (Phase 2) |
+| Where it is kept | inside Vault, at `aws-demo/config/root` | in a file inside the pod, only while the pod is running |
+| Who can read it | nobody — not your team, and not an administrator | only the application that asked for it |
+| How long it lasts | long-lived, but Vault can replace it at any time without anyone handling it | 60 seconds (Phase 1) or 15 minutes (Phase 2) |
 
-> **Vault's own credential is never handed to an application.** Think of a key-cutting
-> machine: it needs a power supply, and the keys it cuts are what your workloads carry.
-> Nobody distributes the power supply.
+`aws-demo` is the path the AWS secrets engine is mounted at in Vault. The steps to configure
+it are in section 5.
+
+> **Vault's own credential is never handed to an application.**
 
 ### The four ways to configure it
 
@@ -103,8 +105,8 @@ vault write -f aws-demo/config/rotate-root
 
 After that second command, Vault has generated a replacement key, stored the secret in its own
 storage and deleted the original. The secret half no longer exists outside Vault, and Vault
-does not return `secret_key` to anyone — a root token included. Prove it live with
-`vault read aws-demo/config/root`, which shows the access key ID and no secret.
+does not return `secret_key` to anyone — a root token included. This can be confirmed at any
+time with `vault read aws-demo/config/root`, which returns the access key ID and no secret.
 
 > Rotation requires Vault's key to be the **only** access key on that IAM user, and AWS caps a
 > user at two. Delete any other key on the user first.
