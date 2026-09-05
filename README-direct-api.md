@@ -30,7 +30,7 @@ show the difference.
 ./scripts/demo.sh auth      # how Vault itself authenticates to AWS
 ./scripts/demo.sh status    # pod, static role, current key, and the AWS-side truth
 ./scripts/demo.sh rotate    # force an immediate rotation instead of waiting
-./scripts/demo.sh slow      # rotation every 5m, for a longer talk track
+./scripts/demo.sh slow      # rotation every 5m, for a slower walkthrough
 ./scripts/demo.sh fast      # back to 1m
 ```
 
@@ -54,8 +54,8 @@ Both use the same ServiceAccount, Vault role and policy. Only the delivery mecha
 
 ## How the application authenticates to Vault
 
-Worth being precise about, because "the pod holds no secret" sounds like a claim until the
-chain is shown.
+The statement that the pod holds no secret is only meaningful once the chain behind it is
+visible, so here it is in full.
 
 **The token the pod holds.** The manifest says only `serviceAccountName: demo-app`. From that,
 the kubelet projects a signed, short-lived token into the pod at

@@ -49,10 +49,13 @@ commonly separated. If yours are in one account, use the same value for both.
 
 ## 1. How Vault authenticates to AWS
 
-Explain this before anything else. The premise is removing static AWS keys, so the first
-question any reviewer asks is *"what credential does Vault itself hold?"* The demo page shows
-the live answer in a band under the header, read directly from configuration, so it never has
-to be asserted from memory.
+Vault issues AWS credentials to workloads, which means Vault itself needs a way to reach the
+AWS API. Removing static keys from applications only counts for something if you also know
+what the system doing the removing holds — so that is where this documentation starts.
+
+This section sets out the four available options, which one this demo runs, and how to reach
+the strongest of them. The running demo reports its own answer in a band beneath the page
+header, read from `aws-demo/config/root` at runtime rather than from documentation.
 
 ### Two credentials, two different jobs
 
@@ -80,9 +83,10 @@ These are set on `aws-demo/config/root` and are mutually exclusive.
 | **Ambient identity** | leave the keys unset; the AWS SDK chain picks up IRSA, EKS Pod Identity or an instance profile | No | **No** — AWS only |
 | **Workload identity federation** | `role_arn` + `identity_token_audience` | No | Yes |
 
-Note the last column. Ambient identity is excellent when Vault runs inside AWS, but it is a
-platform-specific answer. Workload identity federation is the only option that removes the
-static credential *and* keeps working when Vault runs on-premises or in another cloud.
+The last column is the deciding one. Ambient identity is excellent when Vault runs inside AWS,
+but it is a platform-specific answer. Workload identity federation is the only option that
+removes the static credential *and* keeps working when Vault runs on-premises or in another
+cloud.
 
 **This demo uses the self-rotated key**, which is the most portable starting point:
 
@@ -521,22 +525,33 @@ and the same file on disk.
 ./scripts/demo-agent.sh status    # the injected init container and sidecar
 ```
 
-**Suggested order.** Start with the top panel, *"What this application knows about Vault"* —
-the answer is nothing, and it shows both files with their contents and ages. Then watch the
-Phase 1 key change: the file's age resets, the card flashes, a row lands in the rotation
-table, and the ARN underneath stays identical. The credential was replaced under a running
-application, and nothing was notified. Then look at Phase 2: the identity is an STS session of
-`role/dynamic-role`, not an IAM user, so nothing was created in AWS and nothing needs cleaning
-up; the session name carries the Vault namespace, auth mount and Kubernetes namespace that
-asked, so CloudTrail attributes every action back to the workload. Close on the deployment
-YAML beside the application source — all Vault knowledge is in annotations owned by the
-platform team, and none is in the application.
+### What the page shows
+
+**The top panel — "What this application knows about Vault".** The answer is nothing. It lists
+both credential files with their contents and how recently each was written, which is the
+whole of the application's integration with Vault.
+
+**Phase 1, once a minute.** The file's age resets, the card flashes, and a row is added to the
+rotation table recording the old and new access key IDs. The identity line underneath is
+unchanged: the credential was replaced beneath a running application, and neither the
+application nor anything downstream was notified.
+
+**Phase 2, on each issue.** The identity is an STS session of `role/dynamic-role` rather than
+an IAM user, so nothing was created in AWS and nothing needs cleaning up afterwards. The
+session name carries the Vault namespace, auth mount and Kubernetes namespace that requested
+it, so CloudTrail attributes every subsequent action back to the originating workload.
+
+Reading [`k8s/deployment-agent.yaml`](k8s/deployment-agent.yaml) alongside
+[`app-agent/app.py`](app-agent/app.py) shows the division of responsibility directly: all
+Vault knowledge lives in annotations owned by the platform team, and none of it is in the
+application.
 
 ### A note on revoking Phase 2 credentials
 
 **AWS cannot recall an STS credential.** Revoking the Vault lease for an `assumed_role`
 credential removes the lease, but AWS honours the credential until it expires. This is an AWS
-constraint, not a Vault limitation, and it is worth stating plainly before anyone tests it.
+constraint rather than a Vault limitation, and it applies to any tool issuing STS
+credentials.
 
 The control for STS credentials is that they are short-lived. Where you need true revocation,
 `credential_type=iam_user` provides it — Vault deletes the IAM user, and access stops
