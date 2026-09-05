@@ -1,24 +1,34 @@
 # Vault → AWS credentials, with no secrets in your application
 
-A working reference implementation of two patterns for getting AWS credentials into a
-workload without ever placing a secret in the application, its image, its manifest or its
-repository:
+Working reference implementations for delivering AWS credentials to a workload without ever
+placing a secret in the application, its image, its manifest or its repository.
 
 - **Phase 1 — rotate what you already have.** Vault takes ownership of an *existing* IAM
-  user's access key and replaces it on a schedule. The IAM user, its ARN and its policies
-  are untouched. This maps directly onto a fleet of long-lived access keys that are rotated
-  by hand today.
+  user's access key and replaces it on a schedule. The IAM user, its ARN and its policies are
+  untouched. This maps directly onto a fleet of long-lived access keys rotated by hand today.
 - **Phase 2 — remove the standing credential.** Workloads receive a just-in-time credential
-  that Vault mints on demand and that expires by itself. There is no long-lived key left to
-  leak or rotate.
+  that Vault mints on demand and that expires by itself.
 
-Everything here runs against real Vault Enterprise and real AWS. Nothing is mocked. The demo
-presents as a single browser page so the behaviour is visible without switching windows.
+Everything runs against real Vault and real AWS. Each implementation presents as a single
+browser page so the behaviour is visible without switching windows.
 
-The application in this repository contains **no Vault code at all** — a Vault Agent sidecar
-authenticates on the pod's behalf and writes credentials to files. A second variant, where the
-application calls Vault's API directly, is documented in
-[README-direct-api.md](README-direct-api.md).
+---
+
+## Choose an implementation
+
+All three share the AWS resources, the secrets engine, the roles and the policy configured in
+sections 3 and 4 below. They differ only in **how the credential reaches the workload**.
+
+| | Platform | The application contains | Start here if |
+|---|---|---|---|
+| **[kubernetes-agent-injector/](kubernetes-agent-injector/)** | Kubernetes | **no Vault code** — a sidecar writes credentials to files | you run Kubernetes and want the production pattern |
+| **[ec2/](ec2/)** | EC2 / any VM | **no Vault code** — Vault Agent writes credentials to files | your workloads are virtual machines, not containers |
+| **[kubernetes-direct-api/](kubernetes-direct-api/)** | Kubernetes | login, token handling and API calls | you want every step visible for explanation |
+
+The first two are the same design on different platforms, and the point of having both is that
+**the developer experience does not change when the platform does** — in each case the
+application reads a file. The third exists because seeing the login, the token and each
+credential read on screen explains *what is happening* better than a file appearing.
 
 ---
 
@@ -70,7 +80,7 @@ lasts.
 | How long it lasts | long-lived, but Vault can replace it at any time without anyone handling it | 60 seconds (Phase 1) or 15 minutes (Phase 2) |
 
 `aws-demo` is the path the AWS secrets engine is mounted at in Vault. The steps to configure
-it are in section 5.
+it are in section 4.
 
 > **Vault's own credential is never handed to an application.**
 
@@ -153,32 +163,7 @@ either way — same roles, same rotation, same leases, same API.
 
 ---
 
-## 2. Architecture
-
-```
-  Kubernetes cluster (account 444455556666)          AWS account 111122223333
- ┌────────────────────────────────────────┐
- │ namespace: demo-apps                   │
- │  ┌──────────────────────────────────┐  │
- │  │ pod                              │  │
- │  │   vault-agent  (injected sidecar)│──┼──▶ logs in, reads secrets
- │  │        │ writes files            │  │
- │  │        ▼                         │  │
- │  │   /vault/secrets/*.json          │  │
- │  │        │ read                    │  │        ┌──────────────────────────┐
- │  │   application                    │──┼───────▶│ user/demo-app     (P1)   │
- │  └──────────────────────────────────┘  │        │ role/dynamic-role (P2)   │
- │                                        │        └──────────────────────────┘
- │ namespace: vault                       │                     ▲
- │   Vault Enterprise ─────────────────────────────────────────┘
- └────────────────────────────────────────┘   rotates the key / mints credentials
-```
-
-`/vault/secrets` is an in-memory volume; credentials never touch disk on the node.
-
----
-
-## 3. Prerequisites
+## 2. Prerequisites
 
 - Vault Enterprise, unsealed, reachable from the cluster.
 - The **Vault Agent Injector** installed (it ships with the official Vault Helm chart:
@@ -190,7 +175,7 @@ either way — same roles, same rotation, same leases, same API.
 
 ---
 
-## 4. Configure AWS
+## 3. Configure AWS
 
 Policy documents are in [`aws/`](aws/). Replace the account ID first.
 
@@ -229,14 +214,14 @@ Optionally create two S3 buckets so `s3:ListAllMyBuckets` returns something real
 
 ---
 
-## 5. Configure Vault — Kubernetes workloads
+## 4. Configure the Vault AWS secrets engine
 
 ```bash
 export VAULT_ADDR=https://vault.example.com
 export VAULT_NAMESPACE=apps          # omit on Community Edition
 ```
 
-### 5.1 Enable and configure the AWS secrets engine
+### 4.1 Enable and configure the AWS secrets engine
 
 ```bash
 vault secrets enable -path=aws-demo aws
@@ -253,7 +238,7 @@ vault write aws-demo/config/lease lease=15m lease_max=1h
 vault write -f aws-demo/config/rotate-root
 ```
 
-### 5.2 Define the credentials
+### 4.2 Define the credentials
 
 ```bash
 # Phase 1 - take ownership of an existing IAM user's access key.
@@ -275,7 +260,7 @@ vault write aws-demo/roles/dynamic-iam-user \
     user_path=/vault-dynamic/
 ```
 
-### 5.3 Policy
+### 4.3 Policy
 
 Grants read on exactly the credential paths the workload needs, and nothing else.
 
@@ -294,310 +279,30 @@ EOF
 `config/root` is readable so the page can display how Vault authenticates. It never exposes
 secret material. Remove it if you prefer.
 
-### 5.4 Kubernetes auth
+## 5. Now choose an implementation
 
-```bash
-vault auth enable -path=kubernetes kubernetes
+The shared foundation is in place. Continue in one of:
 
-# Run from inside the cluster, Vault uses its own ServiceAccount and CA to call TokenReview.
-vault write auth/kubernetes/config \
-    kubernetes_host="https://kubernetes.default.svc:443"
-
-vault write auth/kubernetes/role/demo-app \
-    bound_service_account_names=demo-app \
-    bound_service_account_namespaces=demo-apps \
-    token_policies=demo-app-policy \
-    token_ttl=1h \
-    alias_name_source=serviceaccount_uid
-```
-
-`alias_name_source=serviceaccount_uid` keys the Vault identity to the ServiceAccount's UID, so
-it stays the same across pod restarts and redeploys — which is what makes per-workload audit
-and policy meaningful.
-
-**How a login works.** The kubelet projects a signed, short-lived token into the pod naming
-its ServiceAccount. Vault Agent presents it to `auth/kubernetes/login`. Vault calls the
-Kubernetes `TokenReview` API to verify it — delegating to the cluster that issued it — then
-checks the role's bindings and issues a Vault token carrying `demo-app-policy`. No credential
-was ever created, distributed or stored by a person.
+- **[kubernetes-agent-injector/](kubernetes-agent-injector/)** — Kubernetes, credentials
+  delivered by an injected sidecar. Adds the Kubernetes auth method.
+- **[ec2/](ec2/)** — a virtual machine, credentials delivered by Vault Agent under systemd.
+  Adds the AWS auth method.
+- **[kubernetes-direct-api/](kubernetes-direct-api/)** — Kubernetes, the application calls
+  Vault's API itself. Uses the same Kubernetes auth method as the injector implementation.
 
 ---
 
-## 6. Deploy
-
-```bash
-kubectl create namespace demo-apps
-kubectl create serviceaccount demo-app -n demo-apps
-./scripts/demo-agent.sh deploy
-./scripts/demo-agent.sh start          # http://localhost:8081
-```
-
-### The integration, in full
-
-Everything that talks to Vault is in the pod annotations in
-[`k8s/deployment-agent.yaml`](k8s/deployment-agent.yaml):
-
-```yaml
-vault.hashicorp.com/agent-inject: "true"
-vault.hashicorp.com/namespace: "apps"
-vault.hashicorp.com/auth-path: "auth/kubernetes"
-vault.hashicorp.com/role: "demo-app"
-vault.hashicorp.com/template-static-secret-render-interval: "20s"
-
-vault.hashicorp.com/agent-inject-secret-aws-static.json: "aws-demo/static-creds/demo-app"
-vault.hashicorp.com/agent-inject-template-aws-static.json: |
-  {{- with secret "aws-demo/static-creds/demo-app" -}}
-  {"access_key":"{{ .Data.access_key }}","secret_key":"{{ .Data.secret_key }}"}
-  {{- end }}
-```
-
-- The **filename is the annotation's key suffix**, not its value:
-  `agent-inject-secret-aws-static.json` produces `/vault/secrets/aws-static.json`. The value
-  is only the Vault path to read. `vault.hashicorp.com/secret-volume-path` changes the
-  directory, which is how you place a file exactly where an application already expects one.
-- The **template** controls the file's format. It can emit JSON, a `.env` file, Java
-  properties, XML — you shape the secret to fit the application rather than changing the
-  application.
-- **`template-static-secret-render-interval`** matters because the Phase 1 credential has no
-  lease. See section 8.
-
----
-
-## 7. What a developer writes
-
-1. Ask the platform team for a Vault role.
-2. Add the annotation block to the deployment manifest.
-3. Read a file.
-
-That is the entire list. For an existing application the change is usually smaller still —
-most already read AWS credentials from a file or environment variable, so the template is
-written to match the format the application already expects and the application code does not
-change at all.
-
-**What is no longer needed:** no Vault SDK or dependency on one; no authentication code, token
-storage, renewal or re-authentication; no secret in the image, manifest, repository or CI
-system; no rotation logic; no AWS credential handling of any kind.
-
-**The one thing to handle:** re-read the file. A long-running process that reads a credential
-once at startup and caches it forever will keep using a key that has since been rotated away.
-In order of effort: read the file each time you need the credential (what this demo does);
-watch it for changes and refresh in place; or have the agent restart the process on change
-with `vault.hashicorp.com/agent-inject-command`.
-
----
-
-## 8. How the credentials refresh
-
-The two phases refresh by different mechanisms, for a good reason: one has a lease and one
-does not.
-
-**Phase 1 — no lease, so the agent polls.** `static-creds` returns `lease_duration: 0`. There
-is nothing to renew and no expiry to anticipate, so the agent re-reads on a fixed timer,
-`template-static-secret-render-interval`. Each cycle it renders the template and compares the
-result to what is on disk, writing atomically **only if it differs**. The file's timestamp is
-therefore a truthful signal that the credential actually changed. Freshness is bounded by the
-interval you choose — the default is 5 minutes, which would be far too slow against a 1-minute
-rotation, hence 20s here.
-
-**Phase 2 — leased, so the agent works to a deadline.** `creds/dynamic-sts` returns a lease
-(≈900s) that is not renewable, so the agent fetches an entirely new credential before the
-current one expires, at roughly 90% of the lease. Tune with
-`vault.hashicorp.com/template-lease-renewal-threshold`.
-
-Nothing is pushed. Vault does not notify the agent, and the agent does not notify the
-application. The agent asks Vault on a schedule and rewrites a file only when the answer has
-changed; the application simply reads a file whose contents occasionally differ.
-
----
-
-## 9. Non-Kubernetes workloads — EC2
-
-Kubernetes auth works because the kubelet gives each pod a signed token proving its
-ServiceAccount. An EC2 instance has neither, so it needs a different way to prove identity —
-but **everything after that point is the same**, including the developer experience.
-
-### The AWS auth method
-
-An EC2 instance already has a machine identity: its **IAM role**, delivered through the
-instance profile. The `iam` login flavour turns that into a Vault login.
-
-1. The instance holds AWS credentials from its instance profile. AWS put them there.
-2. Vault Agent builds an `sts:GetCallerIdentity` request and **signs it** with those
-   credentials, then sends Vault the *signed request* — not the credentials.
-3. Vault forwards it to AWS STS, which replies with the caller's ARN.
-4. Vault matches the ARN against a role and issues a token.
-
-Vault never sees the instance's AWS credentials, and the signature is self-proving.
-
-### Vault configuration
-
-```bash
-export VAULT_ADDR=https://vault.example.com
-export VAULT_NAMESPACE=apps
-
-vault auth enable aws
-
-# Only needed if Vault must call AWS to resolve role ARNs to unique IDs, or for ec2 login.
-# Supports the same options as the secrets engine, including workload identity federation.
-vault write auth/aws/config/client \
-    identity_token_audience="vault-aws-auth" \
-    role_arn="arn:aws:iam::111122223333:role/vault-wif"
-
-vault write auth/aws/role/ec2-app \
-    auth_type=iam \
-    bound_iam_principal_arn="arn:aws:iam::111122223333:role/ec2-app-role" \
-    token_policies=demo-app-policy \
-    token_ttl=1h
-```
-
-That is the exact counterpart of the Kubernetes role in section 5.4 — same policy, same TTL, a
-different way of proving identity landing on identical authorization.
-
-### On the instance
-
-Install Vault Agent and run it as a service with this configuration:
-
-```hcl
-vault { address = "https://vault.example.com" }
-
-auto_auth {
-  method "aws" {
-    mount_path = "auth/aws"
-    namespace  = "apps"
-    config = {
-      type = "iam"
-      role = "ec2-app"
-    }
-  }
-  sink "file" { config = { path = "/etc/vault-agent/token" } }
-}
-
-template_config { static_secret_render_interval = "20s" }
-
-template {
-  destination = "/etc/app/secrets/aws-static.json"
-  perms       = "0400"
-  contents    = <<EOT
-{{- with secret "aws-demo/static-creds/demo-app" -}}
-{"access_key":"{{ .Data.access_key }}","secret_key":"{{ .Data.secret_key }}"}
-{{- end }}
-EOT
-}
-
-template {
-  destination = "/etc/app/secrets/aws-dynamic.json"
-  perms       = "0400"
-  contents    = <<EOT
-{{- with secret "aws-demo/creds/dynamic-sts" -}}
-{"access_key":"{{ .Data.access_key }}","secret_key":"{{ .Data.secret_key }}","session_token":"{{ .Data.session_token }}"}
-{{- end }}
-EOT
-}
-```
-
-Compare that with the annotations in section 6. It is the same agent, the same templates and
-the same files — the `auto_auth` stanza is the only difference, and a platform team writes it
-once into a base image or configuration-management role.
-
-File protection works the same way here, by different mechanics. `perms = "0400"` is the
-`template` stanza's equivalent of the `agent-inject-perms-<name>` annotation, and the agent
-should run under the service account that owns the application so that the file's owner is the
-process that reads it. On a virtual machine the directory is ordinary disk rather than an
-in-memory volume, so place it on a `tmpfs` mount if you want the same memory-only property.
-
-### Developer experience on EC2
-
-**Identical.** The application reads `/etc/app/secrets/aws-static.json` and calls AWS. It has
-no Vault code, no AWS credential, and no awareness that any of this is happening.
-
-> Kubernetes workloads prove who they are with a ServiceAccount. EC2 instances prove who they
-> are with their IAM role. On-premises systems use AppRole, a TLS certificate or JWT/OIDC.
-> Every one of them ends up holding the same thing — a file — and every one lands on the same
-> policy and the same secrets engine. The developer experience does not change when the
-> platform does.
-
-### Where there is no cloud identity
-
-For on-premises systems, the options are **AppRole** (a role ID plus a delivered secret ID),
-**TLS certificate auth** (the machine's existing certificate), or **JWT/OIDC** (an existing
-identity provider — how most CI systems authenticate). All terminate in the same Vault Agent
-and the same file on disk.
-
----
-
-## 10. Running the demo
-
-```bash
-./scripts/demo-agent.sh start     # http://localhost:8081
-./scripts/demo-agent.sh files     # the files the sidecar wrote, secrets masked
-./scripts/demo-agent.sh config    # the agent configuration the injector generated
-./scripts/demo-agent.sh logs      # the sidecar's log: every render and lease renewal
-./scripts/demo-agent.sh status    # the injected init container and sidecar
-```
-
-### What the page shows
-
-**The top panel — "What this application knows about Vault".** The answer is nothing. It lists
-both credential files with their contents and how recently each was written, which is the
-whole of the application's integration with Vault.
-
-**Phase 1, once a minute.** The file's age resets, the card flashes, and a row is added to the
-rotation table recording the old and new access key IDs. The identity line underneath is
-unchanged: the credential was replaced beneath a running application, and neither the
-application nor anything downstream was notified.
-
-**Phase 2, on each issue.** The identity is an STS session of `role/dynamic-role` rather than
-an IAM user, so nothing was created in AWS and nothing needs cleaning up afterwards. The
-session name carries the Vault namespace, auth mount and Kubernetes namespace that requested
-it, so CloudTrail attributes every subsequent action back to the originating workload.
-
-Reading [`k8s/deployment-agent.yaml`](k8s/deployment-agent.yaml) alongside
-[`app-agent/app.py`](app-agent/app.py) shows the division of responsibility directly: all
-Vault knowledge lives in annotations owned by the platform team, and none of it is in the
-application.
-
-### A note on revoking Phase 2 credentials
-
-**AWS cannot recall an STS credential.** Revoking the Vault lease for an `assumed_role`
-credential removes the lease, but AWS honours the credential until it expires. This is an AWS
-constraint rather than a Vault limitation, and it applies to any tool issuing STS
-credentials.
-
-The control for STS credentials is that they are short-lived. Where you need true revocation,
-`credential_type=iam_user` provides it — Vault deletes the IAM user, and access stops
-immediately. The trade-off is IAM entity churn, a few seconds of propagation delay before a
-new credential works, and AWS's limit of two access keys per user. Both are configured here so
-the difference can be shown.
-
----
-
-## 11. Security notes
-
-- Vault's credential is scoped to named IAM entities and one user path. It is not an
-  administrator credential, and the policy document is in the repository for review.
-- `config/rotate-root` means the credential Vault holds was generated by Vault. Re-run it any
-  time; there is nothing to distribute afterwards.
-- The workload's Vault policy grants read on specific credential paths only.
-- Vault tokens issued to workloads are short-lived (1h here). Renewal is available, but
-  re-authenticating is cheap when identity is platform-issued, and re-proving identity is
-  preferable to extending trust in an old token.
-- Credentials are rendered to an in-memory volume (`emptyDir` with `medium: Memory`), so they
-  are never written to node disk. The `agent-inject-perms-*` annotations render them `0400`,
-  and `agent-run-as-same-user` plus the container's `runAsUser` make the application's own
-  user their owner — so the only identity that can read a credential is the process using it.
-- `rotation_period=1m` is a demonstration value. Production deployments should use
-  `rotation_schedule` with a cron expression.
-
----
-
-## 12. What is in this repository
+## What is in this repository
 
 ```
-app-agent/app.py              the application - contains no Vault code
-k8s/deployment-agent.yaml     the annotations; this is the entire integration
-scripts/demo-agent.sh         deploy / start / files / config / logs / reload
-aws/*.json                    IAM policy documents
-README-direct-api.md          the variant where the application calls Vault's API directly
-app/, k8s/deployment.yaml     that variant's application and manifest
-scripts/setup.sh, teardown.sh scripted build and removal of the whole environment
+README.md                        this file: shared AWS and Vault configuration
+aws/*.json                       IAM policy documents used by all implementations
+scripts/setup.sh, teardown.sh    scripted build and removal of the shared foundation
+
+kubernetes-agent-injector/       Kubernetes, sidecar-delivered credentials
+kubernetes-direct-api/           Kubernetes, application calls Vault directly
+ec2/                             EC2 / virtual machine, Vault Agent under systemd
 ```
+
+Each implementation folder contains its own README, application, deployment configuration and
+helper script, and can be followed on its own once sections 3 and 4 are done.

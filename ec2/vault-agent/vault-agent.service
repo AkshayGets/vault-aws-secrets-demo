@@ -1,0 +1,14 @@
+[Unit]
+Description=Vault Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=demoapp
+Group=demoapp
+ExecStart=/usr/bin/vault agent -config=/etc/vault-agent/agent.hcl
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

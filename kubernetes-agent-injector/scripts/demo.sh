@@ -48,20 +48,20 @@ applogs)
 
 reload)  # push local app-agent/app.py into the cluster
   kubectl create configmap demo-app-agent-code -n $NS \
-    --from-file=app.py="$HERE"/app-agent/app.py --dry-run=client -o yaml | kubectl apply -f -
+    --from-file=app.py="$HERE"/app/app.py --dry-run=client -o yaml | kubectl apply -f -
   kubectl rollout restart deploy/$DEP -n $NS
   kubectl rollout status  deploy/$DEP -n $NS
   ;;
 
 deploy)  # first-time (or after teardown) deploy of v2
   kubectl create configmap demo-app-agent-code -n $NS \
-    --from-file=app.py="$HERE"/app-agent/app.py --dry-run=client -o yaml | kubectl apply -f -
-  kubectl apply -f "$HERE"/k8s/deployment-agent.yaml
+    --from-file=app.py="$HERE"/app/app.py --dry-run=client -o yaml | kubectl apply -f -
+  kubectl apply -f "$HERE"/k8s/deployment.yaml
   kubectl rollout status deploy/$DEP -n $NS --timeout=180s
   ;;
 
 delete)
-  kubectl delete -f "$HERE"/k8s/deployment-agent.yaml --ignore-not-found
+  kubectl delete -f "$HERE"/k8s/deployment.yaml --ignore-not-found
   kubectl delete configmap demo-app-agent-code -n $NS --ignore-not-found
   ;;
 

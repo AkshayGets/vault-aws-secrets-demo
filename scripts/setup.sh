@@ -81,9 +81,9 @@ echo "=== 5/5  Kubernetes ==="
 export AWS_PROFILE=$K8S_PROFILE
 kubectl create namespace demo-apps --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl create serviceaccount demo-app -n demo-apps --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-kubectl create configmap demo-app-code -n demo-apps --from-file=app.py="$HERE"/app/app.py \
+kubectl create configmap demo-app-code -n demo-apps --from-file=app.py="$HERE"/kubernetes-direct-api/app/app.py \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-kubectl apply -f "$HERE"/k8s/deployment.yaml >/dev/null
+kubectl apply -f "$HERE"/kubernetes-direct-api/k8s/deployment.yaml >/dev/null
 kubectl rollout status deploy/demo-app -n demo-apps --timeout=180s
 
 echo

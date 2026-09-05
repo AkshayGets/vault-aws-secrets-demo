@@ -1,17 +1,20 @@
 # Variant: the application calls Vault's API directly
 
-The same demonstration as [README.md](README.md) — the same Vault configuration, the same AWS
-resources, the same two phases — but here the application authenticates to Vault itself
-instead of receiving credentials from a sidecar.
+The same demonstration as [../kubernetes-agent-injector/](../kubernetes-agent-injector/) — the
+same Vault configuration, the same AWS resources, the same two phases — but here the
+application authenticates to Vault itself instead of receiving credentials from a sidecar.
 
-**Use the Agent Injector version for production guidance.** This variant exists because it
+**Use [the Agent Injector implementation](../kubernetes-agent-injector/) for production
+guidance.** This variant exists because it
 makes every step visible on screen: the login, the token, each credential read, and each AWS
 call, with real latencies. It is the better one for explaining *what is happening*; the
 injector version is the better one for showing *what a developer actually writes*.
 
-All setup — AWS resources, the secrets engine, roles, policy and Kubernetes auth — is in
-[README.md](README.md) sections 4 and 5. Nothing extra is required for this variant, and the
-[placeholder values](README.md#placeholder-values) are the same.
+All setup is shared: the AWS resources, secrets engine, roles and policy are in
+[sections 3 and 4 of the top-level README](../README.md), and the Kubernetes auth method is in
+[section 2 of the Agent Injector README](../kubernetes-agent-injector/README.md). Nothing extra
+is required for this variant, and [the placeholder values](../README.md#placeholder-values) are
+the same.
 
 ---
 
@@ -23,7 +26,7 @@ kubectl apply -f k8s/deployment.yaml
 ./scripts/demo.sh start        # http://localhost:8080
 ```
 
-The injector version runs on 8081, so both can run at once — which is the clearest way to
+The injector implementation runs on 8081, so both can run at once — which is the clearest way to
 show the difference.
 
 ```bash
@@ -126,3 +129,9 @@ rotated underneath.
 - The application is stdlib-only Python run from a ConfigMap on a stock image, so there is no
   image to build or registry to publish to. Edit `app/app.py` and run `./scripts/demo.sh
   reload`.
+
+## Related
+
+- **[../kubernetes-agent-injector/](../kubernetes-agent-injector/)** — the same demonstration
+  with no Vault code in the application.
+- **[../ec2/](../ec2/)** — the same design on a virtual machine.
