@@ -229,6 +229,85 @@ behave identically either way — same roles, same rotation, same leases, same A
 
 ---
 
+## How often does the application talk to Vault?
+
+A fair question when adopting any secrets manager: if a credential has to be fetched from a
+central service, does every use become a call over the network — and can the application hold
+onto what it fetched? The answer here has three levels, and the first one removes the question
+entirely.
+
+### The pattern in this repository: the application never calls Vault
+
+In the [Agent Injector](kubernetes-agent-injector/) and [EC2](ec2/) implementations, the
+credential is **already on the machine, in a file**, before the application starts. At the
+moment the application needs it, there is no call to Vault at all — it opens a file.
+
+Vault Agent does everything else on the application's behalf:
+
+- it authenticates once, and **renews its own Vault token** in the background;
+- it holds the credential and **re-renders the file only when the contents change**;
+- for leased credentials it fetches a replacement **before the current one expires**.
+
+Two useful consequences. The application does no caching because it has nothing to cache —
+there is no fetch to avoid. And if Vault is briefly unreachable, the workload keeps running on
+what is already on disk; the agent retries in the background. Nothing about the application's
+behaviour changes.
+
+The demo applications simply re-read the file whenever they use it, which is a handful of lines
+and the only application-side consideration in the whole design.
+
+### If the application must call Vault's API
+
+Some applications are built around a client library and need to make the call themselves. They
+still do not need to implement caching, because Vault ships a client daemon that provides it:
+
+**[Vault Agent](https://developer.hashicorp.com/vault/docs/agent-and-proxy/agent)** and
+**[Vault Proxy](https://developer.hashicorp.com/vault/docs/agent-and-proxy/proxy)** each offer
+three capabilities the application would otherwise have to build:
+
+| Capability | What it does for the application |
+|---|---|
+| **Auto-auth** | authenticates to Vault and keeps the token renewed, so the application never handles a login |
+| **API proxy** | the application points at a local listener instead of Vault, and the daemon attaches the token |
+| **Caching** | caches responses containing newly created tokens and leased secrets, and **manages their renewal automatically** |
+
+The application talks to `localhost`, unaware that a token, a lease or a renewal exists.
+
+### Caching static (KV) secrets
+
+Vault Agent [does not support static secret caching with the API
+proxy](https://developer.hashicorp.com/vault/docs/agent-and-proxy/agent/caching). For KV v1 and
+v2, use **Vault Proxy** with
+[`cache_static_secrets`](https://developer.hashicorp.com/vault/docs/agent-and-proxy/proxy/caching/static-secret-caching).
+
+Rather than polling, Vault Proxy subscribes to Vault's event notification system and watches for
+updates and deletes affecting the secrets it holds, updating or evicting entries as they change
+— so the cache stays current without a refresh interval to tune.
+`static_secret_token_capability_refresh_interval` (default `5m`) governs how often the proxy
+re-checks that the token is still permitted to read what it has cached, so a revoked permission
+takes effect in the cache too. This is a Vault Enterprise capability.
+
+### Surviving a restart
+
+Agent caching is held in memory, and renewals stop when the agent stops. A
+[`persist`](https://developer.hashicorp.com/vault/docs/agent-and-proxy/agent/caching) block lets
+the agent restore tokens and leases from a persistent cache file written by a previous process,
+so a restarting workload does not have to re-authenticate and re-fetch. It currently supports
+the `kubernetes` type.
+
+### In short
+
+| How the application consumes secrets | Calls to Vault at use time | Who handles caching and renewal |
+|---|---|---|
+| Reads a file rendered by the agent — **the pattern here** | none | Vault Agent, transparently |
+| Calls Vault's API through the local daemon | to `localhost`, served from cache | Vault Agent or Vault Proxy |
+| Calls Vault directly, no daemon | one per fetch | the application |
+
+Caching is never something an application team has to design, and in the pattern these
+implementations use there is nothing to cache in the first place.
+
+---
+
 ## What is in this repository
 
 ```
