@@ -62,6 +62,129 @@ The instance's IAM role carries **only** `AmazonSSMManagedInstanceCore` — no S
 data access of any kind. Every AWS permission the workload eventually exercises arrives from
 Vault at runtime.
 
+### Reviewing the configuration
+
+Four commands show the whole of it. Run them against your own Vault to confirm what is in
+force — this is also the quickest way to explain the design to someone else.
+
+```bash
+export VAULT_ADDR=https://vault.example.com
+export VAULT_NAMESPACE=apps
+```
+
+**The mount.** The AWS auth method, enabled at a path of your choosing:
+
+```bash
+$ vault auth list
+Path        Type    Accessor              Description
+aws-ec2/    aws     auth_aws_a29547eb     n/a
+```
+
+**Its client configuration.** Empty, and deliberately so — for `iam` login the caller's signed
+request is self-proving, so Vault stores no AWS credentials for this mount:
+
+```bash
+$ vault read auth/aws-ec2/config/client
+No value found at auth/aws-ec2/config/client
+```
+
+**The roles on it.** One per distinct set of permissions, not one per instance:
+
+```bash
+$ vault list auth/aws-ec2/role
+Keys
+----
+ec2-demo-app
+```
+
+**The role itself** — the mapping, and the only part that names AWS:
+
+```bash
+$ vault read auth/aws-ec2/role/ec2-demo-app
+Key                               Value
+---                               -----
+auth_type                         iam
+bound_iam_principal_arn           [arn:aws:iam::111122223333:role/ec2-demo-role]
+resolve_aws_unique_ids            false
+token_policies                    [demo-app-policy]
+token_ttl                         1h
+bound_account_id                  []
+bound_region                      []
+bound_vpc_id                      []
+bound_subnet_id                   []
+bound_ami_id                      []
+bound_iam_instance_profile_arn    []
+```
+
+### How this maps to the instance profile
+
+The chain runs: **instance → instance profile → IAM role → the ARN in
+`bound_iam_principal_arn`.**
+
+An instance profile is a container that carries exactly one IAM role. Attaching the profile to
+an instance is what causes AWS to place credentials *for that role* on the instance. So although
+you attach a *profile*, the identity the instance actually holds is the **role**.
+
+That matters when reading the role above. When Vault relays the signed request, STS returns a
+temporary session ARN of the form:
+
+```
+arn:aws:sts::111122223333:assumed-role/ec2-demo-role/i-0abc123def456
+```
+
+Vault reduces that to the underlying **IAM role ARN** before matching:
+
+```
+arn:aws:iam::111122223333:role/ec2-demo-role
+```
+
+which is why `bound_iam_principal_arn` names the role — not the instance profile, and not the
+per-instance session. The instance ID is deliberately not part of the match, which is what makes
+the next point work.
+
+> One matching detail: with `resolve_aws_unique_ids=false`, as configured here, the ARN is
+> compared as written — so specify it **without any path component**. Section 6 covers why this
+> implementation sets it to `false` and what that trades away.
+
+### A fleet of instances
+
+**Nothing above is per-instance.** The unit of identity is the IAM role behind the instance
+profile, so a thousand instances sharing one instance profile all match the same Vault role and
+receive the same policy. No registration step, no per-instance configuration, and an instance
+that is replaced by an autoscaling group authenticates immediately because its identity is the
+role, not the machine.
+
+When fleets differ, you have three options, in increasing order of blast radius:
+
+| Approach | Configuration | Use when |
+|---|---|---|
+| **One role per fleet** | a Vault role per instance profile, each with its own policy | different fleets need different secrets — the usual answer |
+| **Several ARNs on one role** | `bound_iam_principal_arn` takes a **list** of ARNs | several fleets legitimately share one set of permissions |
+| **A wildcard** | `bound_iam_principal_arn="arn:aws:iam::111122223333:role/app-*"` | a naming convention already separates your fleets |
+
+```bash
+# several instance profiles, one shared set of permissions
+vault write auth/aws-ec2/role/payments-fleet \
+    auth_type=iam \
+    bound_iam_principal_arn="arn:aws:iam::111122223333:role/payments-api,arn:aws:iam::111122223333:role/payments-worker" \
+    resolve_aws_unique_ids=false \
+    token_policies=payments-policy
+```
+
+Two cautions on wildcards. A trailing `*` matches everything below it, so
+`arn:aws:iam::111122223333:role/*` grants that policy to **every role in the account** — scope
+the prefix deliberately. And when the ARN ends in a wildcard, `resolve_aws_unique_ids` is
+ignored, because there is no single role to resolve.
+
+Where a wildcard is too broad on its own, the role fields left empty in the output above exist
+to narrow it further — `bound_account_id`, `bound_region`, `bound_vpc_id`, `bound_subnet_id`,
+`bound_ami_id` and `bound_iam_instance_profile_arn`. A common production shape is a wildcard on
+a role-name prefix combined with `bound_vpc_id`, so that only instances of the right fleet *in
+the right network* can authenticate.
+
+The practical guidance: **the number of Vault roles should track the number of distinct access
+requirements, not the number of instances.**
+
 ---
 
 ## 2. Prerequisites
