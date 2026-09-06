@@ -79,10 +79,7 @@ others.
 
 **For every implementation:**
 
-- **Vault Enterprise**, unsealed and reachable from wherever the workload runs. Namespaces are
-  an Enterprise capability, and workload identity federation — the recommended way for Vault to
-  reach AWS — requires **Vault Enterprise 1.17 or later**, where plugin identity tokens reached
-  general availability.
+- **Vault Enterprise**
 - An AWS account where you can create IAM users, roles and policies.
 - An **existing IAM user** for Phase 1 — Vault rotates an existing user's key; it does not
   create the user.

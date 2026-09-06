@@ -66,8 +66,8 @@ Vault at runtime.
 
 ## 2. Prerequisites
 
-The [common prerequisites](../README.md#prerequisites) — Vault reachable from the instance, an
-AWS account, and an existing IAM user for Phase 1 — plus two specific to this implementation:
+The [common prerequisites](../README.md#prerequisites), plus two specific to this
+implementation:
 
 - Permission to launch an EC2 instance.
 - **AWS Systems Manager**, so the instance can be reached without opening an inbound port.
