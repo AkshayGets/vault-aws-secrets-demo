@@ -117,7 +117,7 @@ Optionally create two S3 buckets so `s3:ListAllMyBuckets` returns something real
 
 ```bash
 export VAULT_ADDR=https://vault.example.com
-export VAULT_NAMESPACE=apps          # omit on Community Edition
+export VAULT_NAMESPACE=apps
 ```
 
 ### 4.1 Enable and configure the AWS secrets engine
@@ -202,7 +202,7 @@ aws iam add-role-to-instance-profile --instance-profile-name ec2-demo-profile \
 
 ```bash
 export VAULT_ADDR=https://vault.example.com
-export VAULT_NAMESPACE=apps          # omit on Community Edition
+export VAULT_NAMESPACE=apps
 
 vault auth enable -path=aws-ec2 aws
 

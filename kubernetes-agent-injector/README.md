@@ -81,7 +81,7 @@ Optionally create two S3 buckets so `s3:ListAllMyBuckets` returns something real
 
 ```bash
 export VAULT_ADDR=https://vault.example.com
-export VAULT_NAMESPACE=apps          # omit on Community Edition
+export VAULT_NAMESPACE=apps
 ```
 
 ### 3.1 Enable and configure the AWS secrets engine

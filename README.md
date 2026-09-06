@@ -79,8 +79,10 @@ others.
 
 **For every implementation:**
 
-- Vault, unsealed and reachable from wherever the workload runs. Workload identity federation
-  and namespaces require Vault Enterprise; everything else works on Community Edition.
+- **Vault Enterprise**, unsealed and reachable from wherever the workload runs. Namespaces are
+  an Enterprise capability, and workload identity federation — the recommended way for Vault to
+  reach AWS — requires **Vault Enterprise 1.17 or later**, where plugin identity tokens reached
+  general availability.
 - An AWS account where you can create IAM users, roles and policies.
 - An **existing IAM user** for Phase 1 — Vault rotates an existing user's key; it does not
   create the user.
@@ -107,7 +109,7 @@ your own before running anything. Nothing here is a real address, account or cre
 | Placeholder | What it stands for |
 |---|---|
 | `vault.example.com` | Your Vault address |
-| `apps` | Vault Enterprise namespace holding the secrets engine. Omit `-namespace` entirely on Vault Community Edition |
+| `apps` | The Vault namespace holding the secrets engine |
 | `111122223333` | AWS account containing the IAM users, roles and policies |
 | `444455556666` | AWS account running the Kubernetes cluster (may be the same account) |
 | `my-cluster` | EKS cluster name |
@@ -222,8 +224,8 @@ must be cleared explicitly in the same write.
 
 There is no AWS credential in Vault's configuration to steal, leak or rotate. Trust is
 cryptographic rather than a shared secret, and revocable from the AWS side alone — delete the
-identity provider and Vault's access ends immediately. Requires Vault Enterprise, and the
-issuer must be reachable from AWS.
+identity provider and Vault's access ends immediately. Requires Vault Enterprise 1.17 or
+later, and the issuer must be reachable from AWS.
 
 **This changes only how the engine authenticates.** [Phase 1](#phase-1) and [Phase 2](#phase-2)
 behave identically either way — same roles, same rotation, same leases, same API.
