@@ -258,20 +258,69 @@ and the only application-side consideration in the whole design.
 
 ### If the application must call Vault's API
 
-Some applications are built around a client library and need to make the call themselves. They
-still do not need to implement caching, because Vault ships a client daemon that provides it:
+Some applications are built around a Vault client library and need to make the call themselves.
+They still do not have to implement caching, because Vault ships a client daemon that provides
+it: **[Vault Proxy](https://developer.hashicorp.com/vault/docs/agent-and-proxy/proxy)**.
 
-**[Vault Agent](https://developer.hashicorp.com/vault/docs/agent-and-proxy/agent)** and
-**[Vault Proxy](https://developer.hashicorp.com/vault/docs/agent-and-proxy/proxy)** each offer
-three capabilities the application would otherwise have to build:
+Run it beside the application — a sidecar in Kubernetes, a service on a VM — and change one
+thing in the application: the Vault address becomes `localhost`.
+
+```hcl
+auto_auth {
+  method "aws" { ... }             # or kubernetes; the same login as everywhere else
+}
+
+api_proxy {
+  use_auto_auth_token = "force"    # the proxy supplies the token; the app carries none
+}
+
+listener "tcp" {
+  address     = "127.0.0.1:8100"
+  tls_disable = true
+}
+
+cache {}
+```
+
+```python
+# before: authenticate, store a token, renew it, send it with every request
+# after:
+creds = requests.get("http://127.0.0.1:8100/v1/aws-demo/creds/dynamic-sts").json()
+```
+
+Three capabilities the application would otherwise have to build itself:
 
 | Capability | What it does for the application |
 |---|---|
 | **Auto-auth** | authenticates to Vault and keeps the token renewed, so the application never handles a login |
-| **API proxy** | the application points at a local listener instead of Vault, and the daemon attaches the token |
+| **API proxy** | the application points at a local listener, and the daemon attaches the token to each request |
 | **Caching** | caches responses containing newly created tokens and leased secrets, and **manages their renewal automatically** |
 
-The application talks to `localhost`, unaware that a token, a lease or a renewal exists.
+Caching matters more here than it first appears. `aws-demo/creds/dynamic-sts` is a *generator*
+endpoint: every call to it mints a **new** credential with a **new** lease. An application
+calling it in a loop without a cache does not get its credential back — it accumulates leases,
+each holding an AWS session open until it expires. With the proxy's cache, repeated requests
+return the same still-valid credential, and the proxy renews it.
+
+### Agent or Proxy?
+
+They were a single tool until Vault 1.14, which separated templating from proxying. The split
+is worth knowing because each can do something the other cannot:
+
+| | Vault Agent | Vault Proxy |
+|---|---|---|
+| Auto-auth | yes | yes |
+| **Rendering secrets to files** | **yes — Agent only** | no |
+| API proxy and caching | yes, but [deprecation announced](https://developer.hashicorp.com/vault/docs/agent-and-proxy/agent/apiproxy) | yes — this is its purpose |
+| **Static (KV) secret caching** | no | **yes — Proxy only** |
+
+- **Rendering secrets to files, so the application needs no changes → Vault Agent.** That is
+  what the implementations in this repository use.
+- **The application calls Vault's API and you want auto-auth and caching → Vault Proxy.** The
+  documentation is explicit: *"We recommend using Vault Proxy for API proxy workflows."*
+- **Caching KV secrets → Vault Proxy**, because Agent cannot do it at all.
+
+Both can run alongside each other if an estate needs both patterns.
 
 ### Caching static (KV) secrets
 
@@ -300,7 +349,7 @@ the `kubernetes` type.
 | How the application consumes secrets | Calls to Vault at use time | Who handles caching and renewal |
 |---|---|---|
 | Reads a file rendered by the agent — **the pattern here** | none | Vault Agent, transparently |
-| Calls Vault's API through the local daemon | to `localhost`, served from cache | Vault Agent or Vault Proxy |
+| Calls Vault's API through the local daemon | to `localhost`, often served from cache | Vault Proxy |
 | Calls Vault directly, no daemon | one per fetch | the application |
 
 Caching is never something an application team has to design, and in the pattern these
