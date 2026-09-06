@@ -3,32 +3,99 @@
 Working reference implementations for delivering AWS credentials to a workload without ever
 placing a secret in the application, its image, its manifest or its repository.
 
-- **Phase 1 — rotate what you already have.** Vault takes ownership of an *existing* IAM
-  user's access key and replaces it on a schedule. The IAM user, its ARN and its policies are
-  untouched. This maps directly onto a fleet of long-lived access keys rotated by hand today.
-- **Phase 2 — remove the standing credential.** Workloads receive a just-in-time credential
-  that Vault mints on demand and that expires by itself.
+This page is the map: what the demonstrations show, how they work in outline, and which one to
+follow. **Every configuration step lives in the implementation folder you choose** — pick one
+below and it will take you from an empty AWS account to a running demonstration.
 
-Everything runs against real Vault and real AWS. Each implementation presents as a single
-browser page so the behaviour is visible without switching windows.
+---
+
+## The two phases
+
+Each implementation shows both.
+
+<a id="phase-1"></a>
+### Phase 1 — rotate what you already have
+
+Vault takes ownership of an **existing** IAM user's access key and replaces it on a schedule.
+The IAM user, its ARN, its policies and its CloudTrail history are untouched — only the
+credential material becomes disposable. This maps directly onto a fleet of long-lived access
+keys that are rotated by hand today, and requires no change to the AWS estate.
+
+<a id="phase-2"></a>
+### Phase 2 — remove the standing credential
+
+The workload receives a **just-in-time** credential that Vault mints on demand and that expires
+by itself. There is no long-lived key left to leak, steal or rotate.
+
+Phase 1 is the bridge; Phase 2 is the destination. Most estates run both — Phase 1 for the
+legacy fleet, Phase 2 for everything new.
+
+---
+
+## How it works, in outline
+
+The same three steps in every implementation, whatever the platform:
+
+```
+  1. PROVE            2. ISSUE                    3. USE
+  The workload        Vault checks the identity   The workload calls AWS
+  proves the          against a policy and        with a credential that
+  identity its        issues an AWS credential    rotates or expires
+  platform already    for it                      underneath it
+  gave it
+       │                       │                          │
+  Kubernetes: the        Phase 1: rotates an        No credential was ever
+  ServiceAccount         existing user's key        created by a person,
+  token                                             written to a file by
+  EC2: the IAM role      Phase 2: mints a new       hand, or copied
+  on the instance        short-lived one            anywhere
+```
+
+Nothing in that chain requires a human to create, transport or store a secret. The workload
+proves what it already is, and receives something short-lived in return.
 
 ---
 
 ## Choose an implementation
 
-All three share the AWS resources, the secrets engine, the roles and the policy configured in
-sections 3 and 4 below. They differ only in **how the credential reaches the workload**.
+The three differ only in **how the credential reaches the workload**. All use the same secrets
+engine, the same roles and the same policy.
 
-| | Platform | The application contains | Start here if |
+| | Platform | The application contains | Use this when |
 |---|---|---|---|
-| **[kubernetes-agent-injector/](kubernetes-agent-injector/)** | Kubernetes | **no Vault code** — a sidecar writes credentials to files | you run Kubernetes and want the production pattern |
-| **[ec2/](ec2/)** | EC2 / any VM | **no Vault code** — Vault Agent writes credentials to files | your workloads are virtual machines, not containers |
-| **[kubernetes-direct-api/](kubernetes-direct-api/)** | Kubernetes | login, token handling and API calls | you want every step visible for explanation |
+| **[kubernetes-agent-injector/](kubernetes-agent-injector/)** | Kubernetes | **no Vault code** — an injected sidecar writes credentials to files | you run Kubernetes. This is the pattern to put into production |
+| **[ec2/](ec2/)** | EC2, or any VM | **no Vault code** — Vault Agent writes credentials to files | your workloads are virtual machines rather than containers |
+| **[kubernetes-direct-api/](kubernetes-direct-api/)** | Kubernetes | login, token handling and API calls | your application must talk to Vault itself — a sidecar or agent is not an option — or you want to see the login, token and credential fetch explicitly while learning the API |
 
-The first two are the same design on different platforms, and the point of having both is that
-**the developer experience does not change when the platform does** — in each case the
-application reads a file. The third exists because seeing the login, the token and each
-credential read on screen explains *what is happening* better than a file appearing.
+The first two are the same design on two platforms, and that is the point: **the developer
+experience does not change when the platform does.** In both, the application reads a file.
+
+Each folder is self-contained. Follow one from top to bottom; there is no need to read the
+others.
+
+---
+
+## Prerequisites
+
+**For every implementation:**
+
+- Vault, unsealed and reachable from wherever the workload runs. Workload identity federation
+  and namespaces require Vault Enterprise; everything else works on Community Edition.
+- An AWS account where you can create IAM users, roles and policies.
+- An **existing IAM user** for Phase 1 — Vault rotates an existing user's key; it does not
+  create the user.
+- The AWS CLI, and `vault` on your path.
+
+**Additionally, depending on the implementation:**
+
+| | Also needs |
+|---|---|
+| **kubernetes-agent-injector/** | a Kubernetes cluster with `kubectl` access, and the **Vault Agent Injector** installed — it ships with the official Vault Helm chart (`injector.enabled=true`). Configures the **Kubernetes auth method** |
+| **ec2/** | permission to launch an EC2 instance, and **AWS Systems Manager** for access without opening a port. Configures the **AWS auth method** |
+| **kubernetes-direct-api/** | a Kubernetes cluster with `kubectl` access. Configures the **Kubernetes auth method** |
+
+Note the difference in the last column: the auth method you configure depends on how the
+workload proves its identity, so it belongs to the implementation rather than to this page.
 
 ---
 
@@ -57,7 +124,7 @@ commonly separated. If yours are in one account, use the same value for both.
 
 ---
 
-## 1. How Vault authenticates to AWS
+## How Vault itself reaches AWS
 
 Vault issues AWS credentials to workloads, which means Vault itself needs a way to reach the
 AWS API. Removing static keys from applications only counts for something if you also know
@@ -79,8 +146,8 @@ lasts.
 | Who can read it | nobody — not your team, and not an administrator | only the application that asked for it |
 | How long it lasts | long-lived, but Vault can replace it at any time without anyone handling it | 60 seconds (Phase 1) or 15 minutes (Phase 2) |
 
-`aws-demo` is the path the AWS secrets engine is mounted at in Vault. The steps to configure
-it are in section 4.
+`aws-demo` is the path the AWS secrets engine is mounted at in Vault. Each implementation's
+README walks through configuring it.
 
 > **Vault's own credential is never handed to an application.**
 
@@ -158,151 +225,22 @@ cryptographic rather than a shared secret, and revocable from the AWS side alone
 identity provider and Vault's access ends immediately. Requires Vault Enterprise, and the
 issuer must be reachable from AWS.
 
-**This changes only how the engine authenticates.** Phase 1 and Phase 2 behave identically
-either way — same roles, same rotation, same leases, same API.
-
----
-
-## 2. Prerequisites
-
-- Vault Enterprise, unsealed, reachable from the cluster.
-- The **Vault Agent Injector** installed (it ships with the official Vault Helm chart:
-  `injector.enabled=true`).
-- A Kubernetes cluster, and `kubectl` access to it.
-- An AWS account where you can create IAM users, roles and policies.
-- An **existing IAM user** for Phase 1. Vault rotates an existing user's key; it does not
-  create the user.
-
----
-
-## 3. Configure AWS
-
-Policy documents are in [`aws/`](aws/). Replace the account ID first.
-
-```bash
-export ACCT=111122223333
-
-# What the workload may do. Deliberately minimal: prove identity, prove authorization.
-aws iam create-policy --policy-name workload-policy \
-  --policy-document file://aws/workload-policy.json
-
-# What Vault may do. Scoped to named entities only - not an administrator credential.
-aws iam create-policy --policy-name vault-permissions-policy \
-  --policy-document file://aws/vault-root-policy.json
-
-# Phase 1 target: stands in for a manually rotated key you already have.
-aws iam create-user --user-name demo-app
-aws iam attach-user-policy --user-name demo-app \
-  --policy-arn arn:aws:iam::$ACCT:policy/workload-policy
-aws iam create-access-key --user-name demo-app
-
-# Vault's own identity.
-aws iam create-user --user-name vault-root
-aws iam attach-user-policy --user-name vault-root \
-  --policy-arn arn:aws:iam::$ACCT:policy/vault-permissions-policy
-aws iam create-access-key --user-name vault-root      # bootstrap only; rotated away below
-
-# Phase 2 target: the role Vault assumes on demand.
-aws iam create-role --role-name dynamic-role \
-  --assume-role-policy-document file://aws/dynamic-role-trust-policy.json \
-  --max-session-duration 3600
-aws iam attach-role-policy --role-name dynamic-role \
-  --policy-arn arn:aws:iam::$ACCT:policy/workload-policy
-```
-
-Optionally create two S3 buckets so `s3:ListAllMyBuckets` returns something real.
-
----
-
-## 4. Configure the Vault AWS secrets engine
-
-```bash
-export VAULT_ADDR=https://vault.example.com
-export VAULT_NAMESPACE=apps          # omit on Community Edition
-```
-
-### 4.1 Enable and configure the AWS secrets engine
-
-```bash
-vault secrets enable -path=aws-demo aws
-
-vault write aws-demo/config/root \
-    access_key="AKIAIOSFODNN7EXAMPLE" \
-    secret_key="<the vault-root bootstrap secret>" \
-    region=us-east-1
-
-# Governs iam_user credential TTLs. Without this they inherit the system default (~32 days).
-vault write aws-demo/config/lease lease=15m lease_max=1h
-
-# Hand the bootstrap credential back to Vault. From here nobody has seen the secret.
-vault write -f aws-demo/config/rotate-root
-```
-
-### 4.2 Define the credentials
-
-```bash
-# Phase 1 - take ownership of an existing IAM user's access key.
-# 1m is a demo value; production would use rotation_schedule (cron, Enterprise).
-vault write aws-demo/static-roles/demo-app \
-    username=demo-app \
-    rotation_period=1m
-
-# Phase 2 - just-in-time credentials by assuming a role. No IAM entity is created.
-vault write aws-demo/roles/dynamic-sts \
-    credential_type=assumed_role \
-    role_arns=arn:aws:iam::111122223333:role/dynamic-role \
-    default_sts_ttl=15m max_sts_ttl=1h
-
-# Optional - just-in-time credentials as a throwaway IAM user. Slower, but truly revocable.
-vault write aws-demo/roles/dynamic-iam-user \
-    credential_type=iam_user \
-    policy_arns=arn:aws:iam::111122223333:policy/workload-policy \
-    user_path=/vault-dynamic/
-```
-
-### 4.3 Policy
-
-Grants read on exactly the credential paths the workload needs, and nothing else.
-
-```bash
-vault policy write demo-app-policy - <<'EOF'
-path "aws-demo/static-creds/demo-app"  { capabilities = ["read"] }
-path "aws-demo/static-roles/demo-app"  { capabilities = ["read"] }
-path "aws-demo/creds/dynamic-sts"      { capabilities = ["read"] }
-path "aws-demo/creds/dynamic-iam-user" { capabilities = ["read"] }
-path "aws-demo/config/root"            { capabilities = ["read"] }
-path "sys/leases/lookup"               { capabilities = ["update"] }
-path "sys/leases/revoke"               { capabilities = ["update"] }
-EOF
-```
-
-`config/root` is readable so the page can display how Vault authenticates. It never exposes
-secret material. Remove it if you prefer.
-
-## 5. Now choose an implementation
-
-The shared foundation is in place. Continue in one of:
-
-- **[kubernetes-agent-injector/](kubernetes-agent-injector/)** — Kubernetes, credentials
-  delivered by an injected sidecar. Adds the Kubernetes auth method.
-- **[ec2/](ec2/)** — a virtual machine, credentials delivered by Vault Agent under systemd.
-  Adds the AWS auth method.
-- **[kubernetes-direct-api/](kubernetes-direct-api/)** — Kubernetes, the application calls
-  Vault's API itself. Uses the same Kubernetes auth method as the injector implementation.
+**This changes only how the engine authenticates.** [Phase 1](#phase-1) and [Phase 2](#phase-2)
+behave identically either way — same roles, same rotation, same leases, same API.
 
 ---
 
 ## What is in this repository
 
 ```
-README.md                        this file: shared AWS and Vault configuration
+README.md                        this page: concepts, prerequisites, navigation
 aws/*.json                       IAM policy documents used by all implementations
-scripts/setup.sh, teardown.sh    scripted build and removal of the shared foundation
+scripts/setup.sh, teardown.sh    scripted build and removal of the shared AWS and Vault objects
 
-kubernetes-agent-injector/       Kubernetes, sidecar-delivered credentials
-kubernetes-direct-api/           Kubernetes, application calls Vault directly
-ec2/                             EC2 / virtual machine, Vault Agent under systemd
+kubernetes-agent-injector/       Kubernetes, credentials delivered by an injected sidecar
+ec2/                             EC2 or any VM, credentials delivered by Vault Agent
+kubernetes-direct-api/           Kubernetes, the application calls Vault's API itself
 ```
 
-Each implementation folder contains its own README, application, deployment configuration and
-helper script, and can be followed on its own once sections 3 and 4 are done.
+Each implementation folder contains its own README with the complete configuration, the
+application, the deployment configuration and a helper script.
