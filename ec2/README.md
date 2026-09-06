@@ -432,6 +432,136 @@ application.
 
 ---
 
+### Inspecting it from the instance
+
+Everything the agent does is visible on the box. Get a shell with
+`./scripts/demo.sh session`, or directly:
+
+```bash
+aws ssm start-session --target i-EXAMPLE1234
+```
+
+Session Manager logs you in as **`ssm-user`**, while the agent runs as the unprivileged
+**`demoapp`** user and its files are owner-only — so most of what follows needs `sudo`.
+
+**Where everything lives:**
+
+| Path | What it is | Mode |
+|---|---|---|
+| `/etc/vault-agent/agent.hcl` | the agent configuration | `0640 demoapp` |
+| `/etc/vault-agent/token` | the Vault token the agent obtained and renews | `0640 demoapp` |
+| `/etc/app/secrets/*.json` | the rendered AWS credentials | `0400 demoapp` |
+| `/etc/systemd/system/vault-agent.service` | the unit that runs it | root |
+| `/usr/bin/vault` | the binary — the agent and the CLI are the same one | — |
+| `journalctl -u vault-agent` | every login, renewal and render | — |
+
+**Is it running, and as whom?**
+
+```bash
+$ sudo systemctl status vault-agent
+● vault-agent.service - Vault Agent
+     Loaded: loaded (/etc/systemd/system/vault-agent.service; enabled; preset: disabled)
+     Active: active (running) since Sat 2026-09-05 10:29:45 UTC; 22h ago
+   Main PID: 2221 (vault)
+
+$ sudo systemctl show vault-agent -p User -p ExecStart --no-pager
+User=demoapp
+ExecStart={ ... argv[]=/usr/bin/vault agent -config=/etc/vault-agent/agent.hcl ... }
+```
+
+`ExecStart` is the authoritative answer to *"which configuration is actually in force?"* — read
+the path from there rather than assuming, then:
+
+```bash
+sudo cat /etc/vault-agent/agent.hcl
+```
+
+**Did it authenticate?** The agent writes its Vault token to the sink file. Its existence is
+the evidence that the AWS login succeeded:
+
+```bash
+$ sudo ls -l /etc/vault-agent/token
+-rw-r-----. 1 demoapp demoapp 110 Sep  5 10:29 /etc/vault-agent/token
+```
+
+You can use that token to interrogate Vault from the instance. Note that a bare
+`vault token lookup` prints the token itself, so filter it if anyone is watching:
+
+```bash
+export VAULT_ADDR=https://vault.example.com
+export VAULT_NAMESPACE=apps
+
+$ sudo cat /etc/vault-agent/token | \
+    VAULT_TOKEN=$(cat -) vault token lookup -format=json | \
+    python3 -c 'import sys,json; d=json.load(sys.stdin)["data"]; print(json.dumps({k:d[k] for k in ("policies","ttl","renewable","display_name")}, indent=2))'
+
+{
+  "policies": ["default", "demo-app-policy"],
+  "ttl": 3304,
+  "renewable": true,
+  "display_name": "apps-auth-aws-ec2-ec2-demo-role/i-EXAMPLE1234"
+}
+```
+
+Three things worth reading in that output. The **policies** are the ones the Vault role granted,
+so authorization is confirmed end to end. The **ttl** counts down and the agent renews it, which
+is why there is only one login in the log rather than one per hour. And the **display_name**
+records the auth mount, the IAM role *and the instance ID* — so although the match is on the
+role ARN and nothing is per-instance, the resulting token still identifies which machine
+obtained it. That is what makes a fleet sharing one role auditable.
+
+**What has it rendered?**
+
+```bash
+$ sudo ls -l /etc/app/secrets/
+-r--------. 1 demoapp demoapp 1054 Sep  6 09:06 aws-dynamic.json
+-r--------. 1 demoapp demoapp  140 Sep  6 09:07 aws-static.json
+
+$ sudo -u demoapp cat /etc/app/secrets/aws-static.json     # contains a live credential
+```
+
+The timestamps are meaningful: the agent rewrites a file **only when its contents change**, so
+`aws-static.json` changing every minute is the Phase 1 rotation arriving.
+
+**The log.** This is where a failed login or a template error will be, and it is the first place
+to look when something is wrong:
+
+```bash
+sudo journalctl -u vault-agent -n 50 --no-pager    # recent activity
+sudo journalctl -u vault-agent -f                  # follow live
+sudo journalctl -u vault-agent | grep rendered     # just the renders
+sudo journalctl -u vault-agent | grep -i auth      # the login and renewals
+```
+
+A healthy start looks like this — one authentication, then renders:
+
+```
+agent.auth.handler: authenticating
+agent.auth.handler: authentication successful, sending token to sinks
+agent.sink.file: token written: path=/etc/vault-agent/token
+agent: (runner) rendered "(dynamic)" => "/etc/app/secrets/aws-static.json"
+agent: (runner) rendered "(dynamic)" => "/etc/app/secrets/aws-dynamic.json"
+```
+
+**The application** is a separate unit, so its health is separate from the agent's:
+
+```bash
+sudo systemctl status demo-app
+sudo journalctl -u demo-app -n 30 --no-pager
+```
+
+**After changing the configuration**, restart the agent and watch it come back:
+
+```bash
+sudo systemctl restart vault-agent
+sudo journalctl -u vault-agent -n 20 --no-pager
+```
+
+If you prefer not to open a shell at all, `./scripts/demo.sh config`, `status`, `logs`,
+`renders` and `files` run these same commands remotely over SSM.
+
+---
+
 ## 9. What a developer writes
 
 1. Ask the platform team for a Vault role.
